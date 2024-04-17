@@ -1,0 +1,195 @@
+
+%% NMSE_calculate
+% 计算网络预测输出结果的误差，并保存文件
+% 只需改文件名
+
+clear;
+clc;
+addpath(genpath('tensorlab_2016-03-28'));
+close all;
+%% 文件索引
+sigma = 3;%dB
+RR = 2;
+snr = 20;
+v = 0.01;
+rho = 0.1;
+
+method_char = 'NMFCPD';  %DWCPD/ICPD  方法选择
+test_char = 'rho';    %sigma/trace/其他  ;对应实验参数设置是不同的sigma还是不同的轨迹trace
+Sigma_index = sigma;   
+
+trace = 2;
+trace_index = trace;
+
+%% 网络预测结果对比的真实值下标范围
+% ICPD_active = 31-1*ceil(1.5*2/rho);
+Method_active = 1*ceil(1.5*2/rho);
+time_step = 20;
+batch_size = 10;
+dw_active = time_step+ batch_size + Method_active ;
+
+%% 导入X-ground truth   （路径需改）
+%file_path_cpd = 'E:\hqy\Sigma_icpd_retry\MATLAB\';
+%file_path_expertisement = ['E:\hqy\Mat_R',num2str(RR),'_v',num2str(v),'_SNR',num2str(snr)];%,'_未归一化'];
+file_path_expertisement = ['E:\黄清扬\SpectrumPrediction_2024\MATLABoutput\Mat_R',num2str(RR),'_v',num2str(v),'_SNR',num2str(snr),'_4'];%,'_未归一化'];
+file_path_cpd = [file_path_expertisement,'\Mat_rho',num2str(rho),'_R',num2str(RR),'_SNR',num2str(snr),'_sinc2C\'];
+%file_nameX = ['DWCPD_X_sigma',num2str(sigma),'.mat'];
+file_nameX = ['Xtrue_',test_char,num2str(rho),'_R',num2str(RR),'.mat'];
+
+
+X_batch = load([file_path_cpd,file_nameX]);
+Xtrue = X_batch.XtrueAll;
+T = size(Xtrue,3)-dw_active;
+Xtrue_active = Xtrue(:,:,dw_active:end);%45~1014,一共970个数据，网络从第44个数据开始online训练与预测
+
+%% 导入AB  
+% 注意A_batch{Sigma_index}，如果更改了要观察的参数种类（sigma/trace），需改index  
+file_nameA = [method_char,'_S_A_',test_char,num2str(rho),'_R',num2str(RR),'.mat'];
+file_nameB = [method_char,'_S_B_',test_char,num2str(rho),'_R',num2str(RR),'.mat'];
+
+A_batch = load([file_path_cpd,file_nameA]);
+A_cpd = A_batch.Ai_R_T;
+A_cpd_active = A_cpd(:,dw_active:end);
+
+B_batch = load([file_path_cpd,file_nameB]);
+B_cpd = B_batch.Bi_R_T;
+B_cpd_active = B_cpd(:,dw_active:end);
+
+I = size(A_cpd_active{1},1);
+J = size(B_cpd_active{1},1);
+
+%% 导入PSD
+file_namePSD =[method_char,'_PSD_',test_char,num2str(rho),'_R',num2str(RR),'.mat'];
+Cest = load([file_path_cpd,file_namePSD]);
+Cest = Cest.Cest;
+
+%% 导入C  （路径需改）
+ K=64;
+epochs = 2;
+%file_path_net = 'E:\hqy\Sigma_icpd_retry\NET\';
+file_path_net = [file_path_cpd,'NEToutput\'];
+
+test_char_C = [test_char,num2str(rho)];
+
+file_nameC_lstm = [method_char,'_LSTM_',test_char_C,'_timestep=',num2str(time_step),'_online'];
+%file_nameC_lstm = [method_char,'_LSTM_',test_char_C,'_lr=1e-4_online'];
+
+%% 对比
+Ts = size(Xtrue_active,3);
+NMSE_lstm_tt = zeros(Ts,epochs);
+for tt = 1:size(Xtrue_active,3)
+    Xtrue_tt_mat = squeeze(Xtrue_active(:,:,tt));
+    Xtrue_tt_tens = mat2tens(Xtrue_tt_mat,[I,J,K],[],3);
+    for ee = 1:epochs
+        Xhat_nmfcpd_lstm = zeros(I,J,K);
+        for rr = 1:RR
+            C_temp = load([file_path_net,file_nameC_lstm,'_',num2str(rr),'.mat']);
+            C_temp = C_temp.C_pred;
+
+            C_icpd = load([file_path_cpd,'NMFCPD_S_C_rho',num2str(rho),'_R',num2str(RR),'_',num2str(rr)]);
+            C_icpd = C_icpd.C_icpd;
+            C_tc = C_icpd(batch_size+time_step+1:end,:);
+            NMSE_c(tt,rr) = frob(C_tc(tt,:)- squeeze(C_temp(tt,ee,:))').^2/frob(C_tc(tt,:)).^2; 
+%             ICPD_active = 31-1*ceil(1.5*2/rho);
+            %C_temp = C_temp(ICPD_active:end,:,:);
+            C_temp_tt = squeeze(C_temp(tt,ee,:));
+            Shat_lstm_rr = A_cpd_active{rr,tt}*diag(C_temp_tt)*B_cpd_active{rr,tt}';
+            
+            Xhat_nmfcpd_lstm = Xhat_nmfcpd_lstm + outprod(Shat_lstm_rr,Cest(:,rr));
+        end
+        NMSE_lstm_tt(tt,ee) = frob(Xtrue_tt_tens - Xhat_nmfcpd_lstm).^2/frob(Xtrue_tt_tens).^2;
+    end
+    if tt == 50 || tt==500 || tt==900
+        MaxdB = max(max(max(10*log10(Xtrue_tt_tens))));
+        MindB = min(min(min(10*log10(Xtrue_tt_tens))))/10;
+        figure();
+        tiledlayout(2,1);
+        nexttile;
+        h1 = contourf(10*log10(Xtrue_tt_tens(:,:,8)),100,'linecolor','None');
+        hold on;
+        %set(h1,'FaceColor','interp','EdgeColor','none')
+        colormap jet;
+%         colorbar();
+        %caxis([MindB MaxdB]);
+        xlim([1 I]);
+        ylim([1 J]);
+        set(gca,'xtick',[],'xticklabel',[])
+        set(gca,'ytick',[],'yticklabel',[])
+        title(['Ground-truth',',$\underline{\boldmath{X}}(:,:,8)$'],'Interpreter','latex','FontName','Times New Roman');
+        Color = get(gca,'Clim');
+
+        nexttile;
+        Xhat_nmfcpd_lstm(Xhat_nmfcpd_lstm<=1e-15)=1e-15;
+        h2 = contourf(10*log10(Xhat_nmfcpd_lstm(:,:,8)),100,'linecolor','None');
+        hold on;
+        %set(h2,'FaceColor','interp','EdgeColor','none')
+        colormap jet;
+        cb = colorbar;
+        cb.Layout.Tile = 'east';
+        caxis(Color)
+        xlim([1 I]);
+        ylim([1 J]);
+        set(gca,'xtick',[],'xticklabel',[])
+        set(gca,'ytick',[],'yticklabel',[])
+        title(['$\hat{X}$',',t=',num2str(tt),',NMSE=',num2str(NMSE_lstm_tt(tt,end))],'Interpreter','latex','FontName','Times New Roman');
+
+
+    end
+end
+
+%% 张量补全误差
+Ci_R_T = load([file_path_cpd,'NMFCPD_S_C_rho',num2str(rho),'_R',num2str(RR),'.mat']);
+Ci_R_T = Ci_R_T.Ci_R_T;
+
+Ai_R_T = load([file_path_cpd,'NMFCPD_S_A_rho',num2str(rho),'_R',num2str(RR),'.mat']);
+Ai_R_T = Ai_R_T.Ai_R_T;
+
+Bi_R_T = load([file_path_cpd,'NMFCPD_S_B_rho',num2str(rho),'_R',num2str(RR),'.mat']);
+Bi_R_T = Bi_R_T.Bi_R_T;
+
+file_nameC_TC = ['NMFCPD_S_C_rho',num2str(rho),'_R',num2str(RR)];
+Rcp = 5;
+Xtrue_TC = Xtrue(:,:,Method_active:end);
+Ai_R_T = Ai_R_T(:,Method_active:end);
+Bi_R_T = Bi_R_T(:,Method_active:end);
+for rr = 1:RR
+    Ci_R_T{rr} = Ci_R_T{rr}(Method_active:end,:);
+end
+Tc = size(Xtrue_TC,3);
+NMSE_TC_tt = zeros(Tc,1);
+for tt = 1:Tc
+    Xhat_TC = zeros(I,J,K);
+    Xtrue_tt_mat = squeeze(Xtrue_TC(:,:,tt));
+    Xtrue_tt_tens = mat2tens(Xtrue_tt_mat,[I,J,K],[],3);
+    for rr = 1:RR
+            C_temp = load([file_path_cpd,file_nameC_TC,'_',num2str(rr),'.mat']);
+            C_temp = C_temp.C_icpd;
+%             ICPD_active = 31-1*ceil(1.5*2/rho);
+            %C_temp = C_temp(ICPD_active:end,:,:);
+            C_temp_tt = squeeze(C_temp(tt,:));
+        %Shat_TC_rr = zeros(I,J); 
+        %Shat_lstm_rr = A_cpd_active{rr,tt}*diag(C_temp_tt)*B_cpd_active{rr,tt}';
+        Shat_TC_rr = Ai_R_T{rr,tt}*diag(C_temp_tt) * Bi_R_T{rr,tt}';
+        Xhat_TC = Xhat_TC + outprod(Shat_TC_rr,Cest(:,rr));
+    end
+    NMSE_TC_tt(tt) = frob(Xtrue_tt_tens - Xhat_TC).^2/frob(Xtrue_tt_tens).^2;
+end
+
+
+
+%save_file_path = 'E:\hqy\Sigma_icpd_retry\NMSE\';
+NMSE_time{1} = NMSE_lstm_tt;
+NMSE_time{2} = NMSE_TC_tt;
+NMSE_time{3} = NMSE_c;
+
+NMSE_TC = mean(NMSE_time{2},1)
+NMSE_sys = mean(NMSE_time{1},1)
+C_pred_mean = mean(mean(NMSE_c,1))
+save_file_path = [file_path_cpd,'result\'];
+if ~exist(save_file_path,'dir')
+    mkdir(save_file_path);
+end
+save_file_name = ['NMSE_',method_char,'_rho',num2str(rho),'_R',num2str(RR),'_timestep=',num2str(time_step),'.mat'];
+save([save_file_path,save_file_name],"NMSE_time");
+
+

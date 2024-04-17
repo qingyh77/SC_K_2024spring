@@ -1,0 +1,34 @@
+close all;
+clc;
+%%
+epoch_show = 15;
+
+
+%% 画某一轮的结果
+% 按batch
+figure(1);
+plot(NMSE_lstm_bb(epoch_show,:),'b-','linewidth',1.5,'DisplayName',['LSTM-predict']);
+hold on
+plot(NMSE_trans_bb(epoch_show,:),'r-','linewidth',1.5,'DisplayName',['transformer-predict']);
+xlabel('batch');
+ylabel('NMSE');
+xlim([0 length(NMSE_trans_bb)])
+grid on;
+set(gca,'GridLineStyle',':');
+set(gca,'Yscale','log');
+legend('NumColumns',2);
+title('与Ground-truth tensor的误差（每个batch的误差均值）');
+
+% 按时间
+figure(2);
+plot(NMSE_lstm_time(epoch_show,:),'b-','linewidth',1.5,'DisplayName',['LSTM-predict']);
+hold on
+plot(NMSE_trans_time(epoch_show,:),'r-','linewidth',1.5,'DisplayName',['transformer-predict']);
+xlabel('T');
+ylabel('NMSE');
+grid on;
+set(gca,'GridLineStyle',':');
+set(gca,'Yscale','log');
+legend('NumColumns',2);
+title(['与Ground-truth tensor的误差','第',num2ste,'轮']);
+xlim([0,length(NMSE_trans_time)])
